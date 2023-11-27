@@ -1,0 +1,104 @@
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '14'
+
+      - name: Install dependencies
+        run: |
+          npm install
+
+      - name: Start http server
+        run: |
+          npm run server
+
+      - name: Run Cypress tests
+        run: |
+          npm run cy:test
+
+  stage:
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy with rsync to EC2
+        uses: burnett01/rsync-deployments@6.0.0
+        with:
+          switches: -avzr --delete --exclude '.git' --exclude '.github' --exclude 'cypress' --exclude 'node_modules' --exclude 'package.json' --exclude 'package-lock.json' --exclude 'cypress.config.js'
+          path: ./
+          remote_path: ${{ secrets.EC2_DOC_ROOT }}
+          remote_host: ${{ secrets.EC2_INSTANCE_IP }}
+          remote_user: ${{ secrets.EC2_REMOTE_USER }}
+          remote_key: "${{ secrets.EC2_SSH_PRIVATE_KEY }}"
+
+  perftest:
+    needs: stage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'adopt'
+          java-version: '14'
+
+      - name: Run JMeter Tests
+        run: |
+          wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.4.1.tgz
+          tar -xf apache-jmeter-5.4.1.tgz
+          export PATH=$PATH:$PWD/apache-jmeter-5.4.1/bin
+          jmeter -n -t ./jmeter/perf_test.jmx -l ./jmeter/test_results.jtl
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v2
+        with:
+          name: jmeter-results
+          path: jmeter/test_results.jtl
+
+
+  statictest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up JDK
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'adopt'
+          java-version: '17'
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Upload SonarQube results
+        uses: actions/upload-artifact@v2
+        with:
+          name: sonarqube-report
+          path: .scannerwork/report-task.txt
